@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+# Example of the opt-in PDAL adapter: runs PDAL's filters.smrf in-process.
+# Requires a build with -DPCA_WITH_PDAL=ON (docs/PdalAdapter.md); the native
+# GPU-free equivalent is `type: filter.smrf` with the same options.
+
+vars:
+  input: input.laz
+  output: classified.laz
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+  classify:
+    type: pdal.filter
+    input: read
+    pdal_type: filters.smrf
+    slope: 0.2
+    window: 16
+    threshold: 0.45
+  write:
+    type: write.las
+    input: classify
+    filename: "${output}"

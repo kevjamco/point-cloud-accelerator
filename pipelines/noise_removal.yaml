@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+vars:
+  input: input.laz
+  output: filtered.laz
+  k: 8
+  multiplier: 2.0
+
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+
+  denoise:
+    type: filter.outlier
+    input: read
+    device: gpu
+    method: statistical
+    k: ${k}
+    multiplier: ${multiplier}
+
+  write:
+    type: write.las
+    input: denoise
+    filename: "${output}"

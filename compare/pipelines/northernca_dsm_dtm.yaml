@@ -1,0 +1,144 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+# Head-to-head benchmark pipeline — pcax side.
+# Twin of northernca_dsm_dtm.json; every stage, option and constant must stay in
+# lockstep with it. Driven by compare/pdal_compare.py.
+#
+# Source: USGS_LPC_CA_NorthernCA_B22_10TEL7280.laz
+#   72,990,132 pts, LAS 1.4 pt fmt 6, 1 km x 1 km tile,
+#   EPSG:6339+5703 (NAD83(2011) / UTM 10N + NAVD88 height - Geoid18),
+#   bounds 572000.01..572999.99 E, 4580000.01..4580999.99 N, Z 1825.16..2229.02,
+#   classes present: 1 (unclassified), 2 (ground), 7 (noise).
+#
+# WHY A PINNED PROJ PIPELINE (the source is already UTM):
+#   An identity reproject would be short-circuited by pcax (Plan::identity)
+#   and near-free in PDAL, so the stage would benchmark nothing. Reprojecting
+#   by `out_srs` alone is worse than useless here: PROJ's best NAD83(2011) ->
+#   NAD83 operation wants four NADCON5 grids that are not installed, so the
+#   two tools can silently disagree on which operation to run (grid vs
+#   ballpark) and may reach for the PROJ CDN. Pinning the operation on both
+#   sides removes operation selection as a variable and guarantees identical
+#   math. UTM 10N -> California Albers (EPSG:3310) keeps the output in metres
+#   (so a 1 m DSM/DTM grid stays natural) and compiles entirely into the GPU
+#   op chain: `inv utm` (Tmerc) + `aea`. NAD83(2011) is treated as NAD83
+#   (sub-metre ballpark, standard practice for CA Albers products).
+#   Z is untouched by the operation, hence the +5703 in out_srs.
+#
+# GRID / CROP CONSTANTS: the tile becomes a ~1.9-degree-rotated quad in
+# Albers. The crop rectangle is the largest axis-aligned box inscribed in
+# that quad, rounded inward to whole metres, and the raster grid is exactly
+# that rectangle — so both DSM and DTM are fully covered, with no ragged
+# nodata edge to muddy the raster comparison.
+#     x [-179100, -178140]   y [374395, 375355]   ->  960 x 960 cells @ 1 m
+
+vars:
+  input: compare/data/USGS_LPC_CA_NorthernCA_B22_10TEL7280.laz
+  out_dir: compare/out/pcax
+  # 0 = unbounded exact kNN (PDAL parity). Set >0 for the faster bounded
+  # pcax-native mode, which has no PDAL equivalent (see docs/Filters.md).
+  sor_radius: "0"
+  precision: fp64
+
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+
+  # filters.range "X![0:0],Y![0:0]" — drop points sitting exactly at (0,0)
+#  drop_origin:
+#    type: filter.range
+#    input: read
+#    limits: "X![0:0],Y![0:0]"
+
+  # filters.range — keep valid classes, dropping the pre-labelled noise (7)
+  keep_classes:
+    type: filter.range
+    input: read
+    limits: "Classification[0:6],Classification[9:11],Classification[13:17]"
+
+  # filters.projpipeline coord_op=<same string> out_srs=EPSG:3310+5703
+  reproject:
+    type: filter.reproject
+    input: keep_classes
+    pipeline: "proj=pipeline step inv proj=utm zone=10 ellps=GRS80 step proj=aea lat_0=0 lon_0=-120 lat_1=34 lat_2=40.5 x_0=0 y_0=-4000000 ellps=GRS80"
+    out_srs: "EPSG:3310+5703"
+    precision: "${precision}"
+    # pinned to match the PDAL writers.las scale_x/y/z, so both LAZ outputs
+    # quantise on the same 1 cm grid
+    out_scale: 0.01
+    out_scale_z: 0.01
+
+  # filters.outlier — PDAL statistical defaults (mean_k=8, multiplier=2.0)
+#  denoise:
+#    type: filter.outlier
+#    input: reproject
+#    device: gpu
+#    method: statistical
+#    k: 8
+#    multiplier: 2.0
+#    search_radius: "${sor_radius}"
+#    precision: "${precision}"
+
+  # filters.range "Classification![7:7]" — drop the points SOR just flagged
+#  drop_noise:
+#    type: filter.range
+#    input: denoise
+#    limits: "Classification![7:7]"
+#
+#  # filters.crop polygon=<inscribed rectangle, Albers metres>
+#  crop:
+#    type: filter.crop
+#    input: drop_noise
+#    polygon: "POLYGON ((-179100 374395, -179100 375355, -178140 375355, -178140 374395, -179100 374395))"
+#
+#  # filters.range "Z[1800:2250]" — elevation sanity band for this tile
+#  # (source Z range is 1825.16..2229.02; stands in for the Everglades
+#  #  filters.dem stage, which needs a base DTM raster we do not have here)
+#  z_band:
+#    type: filter.range
+#    input: crop
+#    limits: "Z[1800:2250]"
+
+  # writers.las — the filtered cloud, for the `pdal info` comparison
+  write_points:
+    type: write.las
+    input: reproject
+    filename: "${out_dir}/points.laz"
+
+  # writers.gdal DSM output_type=max resolution=1.0 (fixed grid)
+  write_dsm:
+    type: writer.gdal_gpu
+    input: write_points
+    filename: "${out_dir}/dsm.tif"
+    resolution: 1.0
+    output_type: max
+    data_type: float32
+    nodata: -9999
+    gdaldriver: GTiff
+    origin_x: -179100
+    origin_y: 374395
+    width: 960
+    height: 960
+
+  # filters.range "Classification[2:2],Classification[9:9]" — ground + water
+  keep_ground_water:
+    type: filter.range
+    input: write_dsm
+    limits: "Classification[2:2],Classification[9:9]"
+
+  # writers.gdal DTM output_type=min resolution=1.0 (same fixed grid)
+  write_dtm:
+    type: writer.gdal_gpu
+    input: keep_ground_water
+    filename: "${out_dir}/dtm.tif"
+    resolution: 1.0
+    output_type: min
+    data_type: float32
+    nodata: -9999
+    gdaldriver: GTiff
+    origin_x: -179100
+    origin_y: 374395
+    width: 960
+    height: 960

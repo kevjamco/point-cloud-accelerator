@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+# Rasterize a point cloud straight to GeoTIFF (all statistics as bands).
+#   pcax run pipelines/gridder.yaml -v input=tile.laz -v output=grid.tif
+
+vars:
+  input: input.laz
+  output: grid.tif
+  resolution: 1.0
+
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+
+  grid:
+    type: writer.gdal_gpu
+    input: read
+    filename: "${output}"
+    resolution: ${resolution}
+    output_type: all
+    gdalopts: "COMPRESS=DEFLATE,TILED=YES"

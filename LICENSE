@@ -1,0 +1,89 @@
+Point Cloud Accelerator License 1.0
+
+Copyright (c) 2026 Advanced Algorithms LLC. All rights reserved.
+Commercial licenses: kevin@adv-algos.com
+
+Anyone may evaluate and test this Software for free. Every other use needs a
+commercial license, whatever your size and whether or not you are a company.
+This license does not permit redistribution and is not an open-source license
+as defined by the Open Source Initiative.
+
+1. Definitions
+
+   "Software" is the Point Cloud Accelerator source code, binaries,
+   documentation and other materials the Licensor distributes under this
+   license, plus any modification you make to them.
+
+   "Licensor" is Advanced Algorithms LLC.
+
+   "Evaluation Use" is assessing, testing or benchmarking the Software or
+   building a proof of concept, outside production and without delivering
+   any product, service or result to anyone else. Any other use is
+   "Commercial Use", including use by an individual, a school, a university,
+   a research institute, a non-profit or a government body, and whether or
+   not you charge anyone for it.
+
+2. Grant
+
+   By using the Software you accept this license. The Licensor grants you a
+   worldwide, royalty-free, non-exclusive, non-transferable,
+   non-sublicensable license to use, copy, modify and run the Software for
+   Evaluation Use, subject to Sections 3 to 5.
+
+3. Commercial Use
+
+   Commercial Use requires a commercial license from the Licensor, in force
+   for the whole period of that use. Buy one before you begin; contact
+   kevin@adv-algos.com. Evaluation Use stays free, for everyone, with no
+   time limit.
+
+4. Notices and redistribution
+
+   Only the Licensor distributes the Software. Do not distribute, publish,
+   sell, rent, lend or sublicense it, and do not offer it as a hosted or
+   managed service. You may deploy it inside your own organization for your
+   own use, and you may fork the Licensor's repository on the platform where
+   it is published, publicly if that platform is public, solely to send
+   contributions back.
+
+   Keep this license, the copyright notice and the NOTICE and
+   THIRD_PARTY_NOTICES files with every copy, including modified copies and
+   internal deployments. A modified copy must state prominently that it was
+   modified and by whom. Do not circumvent the conditions of this license.
+   What you produce by running the Software is yours.
+
+5. Third-party components
+
+   THIRD_PARTY_NOTICES lists third-party components under their own
+   licenses, which continue to govern them. Nothing here restricts your
+   rights under those licenses, including the right to modify a component
+   licensed under the GNU Lesser General Public License and to reverse
+   engineer the Software as far as needed to debug that modification.
+
+6. Patents
+
+   The Licensor grants you a license under any patent claims it can license
+   that the Software as provided would infringe, to the extent needed to
+   exercise the rights above. If you bring a patent claim alleging that the
+   Software infringes a patent, all your rights under this license end.
+
+7. Termination
+
+   If you violate this license your rights under it end immediately. Only
+   the Licensor can reinstate them, in writing.
+
+8. General
+
+   This license grants no rights in the Licensor's trademarks or names, and
+   none beyond those stated here. If a provision is unenforceable it is
+   modified to the least extent needed to make it enforceable, or severed,
+   and the rest stands.
+
+9. Disclaimer of warranty and limitation of liability
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

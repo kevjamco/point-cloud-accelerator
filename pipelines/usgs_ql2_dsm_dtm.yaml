@@ -1,0 +1,69 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+# USGS 3DEP QL2 delivery (e.g. Santa Clara County 2020, LAS 1.4 PDRF 6): drop
+# the vendor-labeled noise AND any Withheld points, then grid DSM (max over all surviving
+# returns) and DTM (min over ground) in the native CRS.
+#
+# Noise is already classified: 7 (low noise) and 18 (high noise). On the
+# tiles this was written for the LAS Withheld flag marks exactly the same
+# point set, but Withheld is the general "ignore this
+# point" flag and need not coincide with the noise classes on other
+# deliveries — so we drop it explicitly via filter.range on the Withheld
+# dimension (extracted by default, bit 2 of the PDRF-6 flag byte). The two
+# keep-ranges AND together (different dimensions), so this keeps a point only
+# if its class is non-noise and Withheld == 0.
+#
+# Resolution is in the file's CRS units: for a ftUS State Plane delivery
+# 2.5 ft divides a 2500 ft tile evenly; use 1.0 for metric UTM tiles.
+#   pcax run pipelines/usgs_ql2_dsm_dtm.yaml -v input=tile.laz -v dsm=dsm.tif -v dtm=dtm.tif
+
+vars:
+  input: input.laz
+  dsm: dsm.tif
+  dtm: dtm.tif
+  resolution: 2.5
+
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+
+  # filters.range — keep non-noise classes (same-dimension ranges OR together
+  # in PDAL grammar, so "![7:7],![18:18]" would pass every point; positive
+  # keep-ranges express the exclusion correctly) AND drop Withheld points
+  # (different dimension → ANDed).
+  drop_noise:
+    type: filter.range
+    input: read
+    limits: "Classification[0:6],Classification[8:17],Withheld[0:0]"
+
+  # DSM: highest surviving return per cell
+  write_dsm:
+    type: writer.gdal_gpu
+    input: drop_noise
+    filename: "${dsm}"
+    resolution: ${resolution}
+    output_type: max
+    data_type: float32
+    nodata: -9999
+    gdaldriver: GTiff
+
+  # filters.range "Classification[2:2]" — ground only (no water class in
+  # these tiles)
+  keep_ground:
+    type: filter.range
+    input: write_dsm
+    limits: "Classification[2:2]"
+
+  # DTM: lowest ground return per cell
+  write_dtm:
+    type: writer.gdal_gpu
+    input: keep_ground
+    filename: "${dtm}"
+    resolution: ${resolution}
+    output_type: min
+    data_type: float32
+    nodata: -9999
+    gdaldriver: GTiff

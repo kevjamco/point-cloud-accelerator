@@ -1,0 +1,39 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+vars:
+  input: input.laz
+  output_las: filtered.laz
+  output_tif: gridded.tif
+  k: 8
+  multiplier: 2.0
+  resolution: 1.0
+  srs: "EPSG:3857"
+
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+
+  denoise:
+    type: filter.outlier
+    input: read
+    device: gpu
+    method: statistical
+    k: ${k}
+    multiplier: ${multiplier}
+
+  write:
+    type: write.las
+    input: denoise
+    filename: "${output_las}"
+
+  grid:
+    type: writer.gdal_gpu
+    input: denoise
+    filename: "${output_tif}"
+    resolution: ${resolution}
+    output_type: all
+    override_srs: "${srs}"
+    gdalopts: "COMPRESS=DEFLATE,TILED=YES"

@@ -1,0 +1,15 @@
+Point Cloud Accelerator (pcax)
+Copyright (c) 2026 Advanced Algorithms LLC. All rights reserved.
+
+Licensed under the Point Cloud Accelerator License 1.0 (see LICENSE):
+evaluation and testing are free for everyone, with no time limit. Every
+other use — by anyone, including individuals, schools, universities,
+research institutes, non-profits and government bodies — requires a
+commercial license from Advanced Algorithms LLC (kevin@adv-algos.com).
+Redistribution is not permitted.
+
+This software includes third-party open-source components. Their copyright
+notices and license terms are listed in THIRD_PARTY_NOTICES.md and, for the
+embedded viewer, in viewer/LICENSES/. Those terms continue to apply to those
+components. This NOTICE, LICENSE and THIRD_PARTY_NOTICES.md must stay with
+every copy of the software (LICENSE §4).

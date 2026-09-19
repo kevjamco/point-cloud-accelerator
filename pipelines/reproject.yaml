@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Advanced Algorithms LLC
+# SPDX-License-Identifier: LicenseRef-PointCloudAccelerator-1.0
+version: 1
+
+# GPU reprojection: read -> reproject -> write.
+# Source CRS comes from the input file's CRS VLRs; override with in_srs.
+# precision: fp32 enables reduced-accuracy dev mode (~metre-level error).
+
+vars:
+  input: input.laz
+  output: reprojected.laz
+  out_srs: EPSG:4326
+
+stages:
+  read:
+    type: read.las
+    filename: "${input}"
+
+  reproject:
+    type: filter.reproject
+    input: read
+    out_srs: "${out_srs}"
+    precision: fp64
+
+  write:
+    type: write.las
+    input: reproject
+    filename: "${output}"

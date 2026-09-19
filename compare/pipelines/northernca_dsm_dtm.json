@@ -1,0 +1,85 @@
+{
+  "pipeline": [
+    {
+      "tag": "read",
+      "type": "readers.las",
+      "filename": "USGS_LPC_CA_NorthernCA_B22_10TEL7280.laz"
+    },
+    {
+      "tag": "keep_classes",
+      "type": "filters.range",
+      "inputs": [
+        "read"
+      ],
+      "limits": "Classification[0:6],Classification[9:11],Classification[13:17]"
+    },
+    {
+      "tag": "reproject",
+      "type": "filters.projpipeline",
+      "inputs": [
+        "keep_classes"
+      ],
+      "coord_op": "proj=pipeline step inv proj=utm zone=10 ellps=GRS80 step proj=aea lat_0=0 lon_0=-120 lat_1=34 lat_2=40.5 x_0=0 y_0=-4000000 ellps=GRS80",
+      "out_srs": "EPSG:3310+5703"
+    },
+    {
+      "tag": "write_points",
+      "type": "writers.las",
+      "inputs": [
+        "reproject"
+      ],
+      "filename": "points.laz",
+      "scale_x": 0.01,
+      "scale_y": 0.01,
+      "scale_z": 0.01,
+      "offset_x": "auto",
+      "offset_y": "auto",
+      "offset_z": "auto",
+      "a_srs": "EPSG:3310+5703",
+      "minor_version": 4,
+      "dataformat_id": 6
+    },
+    {
+      "tag": "write_dsm",
+      "type": "writers.gdal",
+      "inputs": [
+        "write_points"
+      ],
+      "filename": "dsm.tif",
+      "resolution": 1.0,
+      "output_type": "max",
+      "data_type": "float32",
+      "nodata": -9999,
+      "gdaldriver": "GTiff",
+      "origin_x": -179100,
+      "origin_y": 374395,
+      "width": 960,
+      "height": 960
+    },
+    {
+      "tag": "keep_ground_water",
+      "type": "filters.range",
+      "inputs": [
+        "write_dsm"
+      ],
+      "limits": "Classification[2:2],Classification[9:9]"
+    },
+    {
+      "tag": "write_dtm",
+      "type": "writers.gdal",
+      "inputs": [
+        "keep_ground_water"
+      ],
+      "filename": "dtm.tif",
+      "resolution": 1.0,
+      "output_type": "min",
+      "data_type": "float32",
+      "nodata": -9999,
+      "gdaldriver": "GTiff",
+      "origin_x": -179100,
+      "origin_y": 374395,
+      "width": 960,
+      "height": 960
+    }
+  ]
+}
