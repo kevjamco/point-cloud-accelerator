@@ -908,7 +908,10 @@ that alters membership must use exactly the right one:
 
     [`compact(keepMask)`],
     [drop points where mask is 0, preserving order; updates
-     `metadata.pointCount`; frees device memory],
+     `metadata.pointCount`. Chunk-parallel and in place. Residency is kept:
+     a dim whose device copy is current is compacted on the device too
+     (CUDA), so a GPU stage that follows does not re-upload the cloud. A
+     mask that keeps everything is a no-op],
     [compacted too],
     [`shrink(count)`],
     [truncate to a prefix, preserving data],
@@ -1137,6 +1140,15 @@ else          for (auto& [id, arr] : cloud.dims())
                   if (cloud.residency(id) == Residency::Device) cloud.ensureHost(id);
 ```
 
+One refinement sits on top of that loop. `filter.range`, `filter.crop` and
+`filter.dem` derive from `PredicateFilter`: pure per-point keep tests that
+write no dimension. The executor runs a chain of consecutive predicate
+stages against one shared keep mask (`evaluate()` clears the entries that
+fail) and calls `compact()` once, after the last of them, instead of once
+per stage. Because a point's result does not depend on any other point, the
+output is identical to running the stages one by one; each stage still gets
+its own profile entry, log line and point count.
+
 This is correct and coarse. It uploads *every* dimension for a GPU stage
 because `Stage` has no way to declare what it reads: for a format-6 tile that
 is 33 B/point where `filter.ml_noise` uses 21, and it round-trips columns
@@ -1164,10 +1176,40 @@ across PCIe whenever the pipeline alternates CPU and GPU stages. A
       [`Streamable::processOne`, fixed-capacity `StreamPointTable`],
     [parallelism], [thread pool for I/O + chunked CPU filters; GPU for the rest],
       [none within a stage],
-    [per-stage timing], [built-in profiler tree (`-d`), CUDA events for GPU],
+    [per-stage timing], [built-in profiler tree (`-d`) or JSON with per-stage
+      point counts (`--profile-json`), CUDA events for GPU],
       [`--metadata`, external timing],
   )
 ]
+
+== The license gate
+
+`execute()` takes a `license::Session` and nothing runs without one. The
+CLI obtains it in `runJob` (`src/main.cpp`) before `prepare()`: a valid
+offline *lease* on disk, else a *grant* from the license server
+(`POST /v1/grant`, libcurl), else the interactive activation flow, else
+exit code 4. Both leases and grants are signed envelopes — Ed25519 over
+`"pcax-license-v1:" + payload bytes`, verified with the public key compiled
+in through `PCA_LICENSE_PUBKEY` (OpenSSL EVP). A grant echoes a nonce the
+client chose and the machine fingerprint (`sha256("pcax-fp-v1|" +
+machine-id)`), so a redirected server, a replayed grant or a copied
+credentials file all fail verification. The executor does not trust the
+CLI: `Session::check()` re-verifies the envelope before every stage and
+re-acquires when the grant's `refresh` time has passed (a revoked
+evaluation stops within ten minutes of a long batch), tolerating a server
+outage until `exp`. The wire protocol is specified next to the server's
+source; what is reported, and that it is reported, is stated in
+`docs/Licensing.md`.
+
+Dev and CI source builds compile in the test public key and run every tier
+with the committed test lease; only the conda package build carries the
+production key. There is no build switch that disables the check — a build
+without a key fails to configure. The protection is deliberately
+proportionate: it closes the cheap bypasses (rebuilding without the gate,
+pointing the client at a stub server, copying a token between machines)
+and produces the run log that makes the licence enforceable; it does not
+pretend to stop a determined reverser with a debugger, which no client-side
+check can.
 
 #pagebreak()
 = The spatial index <sec-grid>
@@ -1710,7 +1752,7 @@ GPU op descriptors:
 ```cpp
 enum class OpType : int32_t {            // include/pca/reproj/Plan.hpp
     Noop, AxisSwap, UnitConvert, Cart, Helmert, Tmerc, Merc, Webmerc,
-    Lcc, Aea, HGridShift, VGridShift, PushV, PopV,
+    Lcc, Aea, HGridShift, VGridShift, GridShift, PushV, PopV,
 };
 struct OpDesc {
     OpType  type;  int32_t inverse;            // +inv on this step
@@ -1908,6 +1950,16 @@ CUDA patterns from the filters.
   )
 ]
 
+Before any kernel runs, the writer derives the output window. With
+`origin_x`/`origin_y`/`width`/`height` the window is fixed; otherwise it is
+the XY bounding box of the points, reduced *on the device*
+(`thrust::minmax_element` over the device X/Y). The device copy is the
+authoritative one at this point: a GPU stage that rewrote coordinates
+(`filter.reproject`) leaves X/Y `Device`-resident with a stale host copy
+until a CPU stage forces a download, so sizing the grid from `dimData()`
+would measure pre-reprojection coordinates (a degree-sized tile became a
+1×1 raster). `test_gdal_gpu_writer` pins this.
+
 Two things distinguish it from the filter kernels.
 
 *Thread ↦ cell, not thread ↦ point.* Once points are sorted by cell, the
@@ -2003,7 +2055,10 @@ backend-specific list.
     [memory], [discrete: explicit `cudaMemcpy` both ways],
       [unified: `MTL::Buffer` removes host↔device copies entirely],
     [precision], [FP32 and FP64], [*FP32 only* — `precision: fp64` throws],
-    [primitives], [CUB, Thrust], [vendored MSL sort/scan in `pca::gpu`],
+    [primitives], [CUB, Thrust], [MSL counting-sort grid, exclusive scan on
+      the host over unified memory],
+    [kernel time limit], [none], [per-command-buffer GPU watchdog (~2–5 s),
+      so `dispatch1D` splits every grid into self-sized chunks],
     [`filter.reproject`], [GPU op chain], [host PROJ (FP64 accuracy matters
       more than speed here)],
   )

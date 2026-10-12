@@ -15,6 +15,11 @@ GRIDS=(
     au_ga_AUSGeoid2020_20180201.tif     # AUSGeoid2020: GDA2020 -> AHD (EPSG:5711)
     de_adv_BETA2007.tif                 # DHDN -> ETRS89 precise datum grid
     ca_nrc_ntv2_0.tif                   # NAD27 -> NAD83 Canada (multi-subgrid NTv2)
+    # NADCON5 (+proj=gridshift, biquadratic): NAD83(1986) <-> NAD83(2011), CONUS
+    us_noaa_nadcon5_nad83_1986_nad83_harn_conus.tif
+    us_noaa_nadcon5_nad83_harn_nad83_fbn_conus.tif
+    us_noaa_nadcon5_nad83_fbn_nad83_2007_conus.tif
+    us_noaa_nadcon5_nad83_2007_nad83_2011_conus.tif
 )
 
 for g in "${GRIDS[@]}"; do

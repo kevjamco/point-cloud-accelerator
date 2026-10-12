@@ -38,11 +38,11 @@ the abstraction draws the line at the **host API**:
             └──────────────┬────────────────┘
                           ▼
               pca::gpu  abstraction (include/pca/gpu/)
-   Context · Buffer · Encoder · primitives (sortPairsU32, scan, reduce)
+   Context · Buffer · dispatch1D · DeviceGrid (uniform grid)
             ┌───────────────┴───────────────┐
             ▼                               ▼
         cuda backend                   metal backend
-   (CUDA runtime, CUB, Thrust)   (metal-cpp, vendored MSL primitives)
+   (CUDA runtime, CUB, Thrust)   (metal-cpp, MSL kernels, host scan)
 ```
 
 ### Adding a GPU filter that supports both backends
@@ -89,17 +89,98 @@ configure time and fails with a clear message if missing.
   embedded `pcax.metallib`). Caches `MTL::ComputePipelineState` by kernel
   name. Carries a capability struct (`hasFloatAtomics`,
   `hasSimdReduction`, `unifiedMemory`) — all true on M1 Max (Apple7).
-- **`Encoder`** (Metal) — thin wrapper over `MTL::ComputeCommandEncoder`
-  with verbs `setPipeline(name)`, `setBuffer(buf, idx)`,
-  `setBytes(&v, n, idx)`, `dispatch(nThreads)` /
-  `dispatch1D(n, tgSize)`. Modeled on MLX's `CommandEncoder`.
-- **Parallel primitives** (`pca::gpu::prim`) — the CUB/Thrust gap. Metal
-  has no MPS sort and no Thrust, so these are vendored MSL kernels driven
-  from the host:
-  - `sortPairsU32(keys, values, n)` — LSB radix sort of (uint32,uint32)
-    pairs (grid binning). CUDA: `cub::DeviceRadixSort::SortPairs`.
-  - `exclusiveScanU32(in, out, n)` — CUDA: `cub::DeviceScan::ExclusiveSum`.
-  - `reduce*` — built on `simd_sum` + threadgroup partials (Apple7+).
+- **`dispatch1D(kernel, n, bind)`** (`src/gpu/metal/MetalContext.cpp`) —
+  the only way a kernel is launched. `bind` receives a
+  `MTL::ComputeCommandEncoder` with the pipeline set and binds the caller's
+  buffers/bytes; threadgroup size comes from the pipeline's occupancy hints
+  (capped at 256). The grid is never submitted as one command buffer — see
+  "GPU watchdog" below. Blocks until the last chunk completes and returns
+  the summed GPU time in ms.
+- **`DeviceGrid`** (`src/gpu/metal/SpatialGridMetal.hpp`) — the uniform
+  grid every neighborhood kernel searches: a counting sort built from two
+  kernels (atomic per-cell counts, then an atomic-cursor scatter into
+  `sortedIndices`) with the exclusive scan done on the host over unified
+  memory. There is no radix sort and no GPU scan/reduce primitive on Metal;
+  the CUDA side uses CUB for the same steps.
+
+### GPU watchdog
+
+macOS evicts a command buffer that "impacts interactivity"
+(`kIOGPUCommandBufferCallbackErrorImpactingInteractivity`): when the
+display needs the GPU the driver asks the running buffer to store its
+context, and a buffer whose threads cannot reach a preemption point within
+the driver's timeout is killed. It is per command buffer, fires only while
+a display is active, gets stricter with display load, and is not a fixed
+duration — 24 s buffers have survived and 3 s ones have died. Two things
+keep pcax clear of it: every buffer is short (`dispatch1D` chunking, below)
+and every *thread* is short (the SOR two-pass design, below). As a second
+line of defence `MetalContext` sets `AGX_RELAX_CDM_CTXSTORE_TIMEOUT=1` for
+its own process, the driver knob MLX-based tools use, which relaxes the
+context-store timeout. A 23.4 M-point topobathy tile that died in
+`filter.outlier` before this work now runs end to end in ~60 s on M1 Max.
+`dispatch1D` splits every grid into chunks of thread indices, each its own
+command buffer:
+
+- The dispatcher binds the chunk mapping `(stride, first, width)` at buffer
+  slot 30 (`PCA_CHUNK_BUFFER`, `src/gpu/metal/kernels/Dispatch.h`); every
+  kernel ends its parameter list with `PCA_GRID_INDEX_PARAMS` and opens
+  with `PCA_GRID_INDEX(tid)`. Callers' bind lambdas never see chunking.
+  The mapping can express strided or contiguous blocks; the dispatcher
+  uses contiguous ones (`stride = n`).
+- Chunks are over *query indices only*: each thread still reads the whole
+  input and writes its own slot, so results are identical to a single
+  dispatch. (Kernels that scatter with atomics — the grid build and label
+  propagation — were already unordered.)
+- Chunk size is self-tuning: a never-seen kernel starts at 16 K threads;
+  each finished chunk's GPU time (`GPUEndTime − GPUStartTime`) sizes the
+  next toward a 200 ms target (`PCAX_METAL_CHUNK_MS` overrides; growth
+  capped at 8× per step, never below 16 K). The measured throughput seeds
+  the kernel's next call with a 4× margin, so light kernels in host-driven
+  loops (fps, kmeans, cluster/dbscan propagation) cost one buffer per
+  iteration. A faster chip simply gets bigger chunks.
+- Up to 8 chunks are in flight on 8 command queues (`MetalContext::kLanes`),
+  and buffers are allocated `HazardTrackingModeUntracked` (safe because
+  every `dispatch1D` drains before returning and the host only touches
+  buffers between dispatches). Tracked buffers would make Metal serialize
+  the chunks even across queues; untracked, the GPU runs them
+  concurrently, so one chunk's ramp-down overlaps the next chunk's body.
+- **Threads must be short too.** A chunk lasts as long as its slowest
+  thread, and a thread that runs for seconds blocks preemption. Real tiles
+  have such *stragglers*: an isolated point (open water in a topobathy
+  tile) whose expanding-ring kNN visits most of the grid. In the old single
+  dispatch the whole 1.46 M-point SOR kernel (~4 s) was essentially the
+  longest such thread, hidden under everything else; chunking exposed them
+  (forcing 1 K-point chunks made the stage 3.5× slower, proving chunks are
+  latency- not throughput-bound), and a uniformly strided partition put a
+  straggler in every chunk (~90 s) — hence contiguous chunks. Two kernel
+  changes remove them:
+  - `DeviceGrid` also emits the coordinates packed in cell order
+    (`sortedXYZ`, `packed_float3`, bound at slot 29); every cell loop
+    streams a cell's points from one or two cache lines instead of
+    gathering three random ones per candidate through `sortedIdx`.
+  - `filter.outlier` runs its kNN in two passes (`sor.metal`): the
+    per-thread ring walk stops at 8 rings, and the points still unresolved
+    (isolated ones; 2 % of the Everglades subset, 1.4 % of the full tile)
+    get a 128-thread threadgroup each that splits every ring's cells across
+    lanes and merges the private top-K lists. The candidate set is a
+    superset of the serial walk's at distances ≥ its stop bound, so the k
+    smallest distances and the SOR mean are bit-identical. (The group's
+    early exit is the serial test restated as a count — the lanes together
+    hold ≥ K candidates within `d·cellSize` — so groups stop at the same
+    ring.) On the Everglades subset the stage went from ~4.4 s (old single
+    dispatch) to ~1.1 s; the full 23.4 M-point tile, unrunnable before,
+    takes ~19 s for the stage and ~25 s for the whole pipeline.
+- Tunables (environment): `PCAX_METAL_CHUNK_MS` (GPU time per buffer,
+  default 50), `PCAX_METAL_MIN_CHUNK` (cold/first chunk and floor, default
+  16384), `PCAX_METAL_MAX_CHUNK` (hard cap, default 65536 — per-thread cost
+  jumps ~100× between regions of a real tile, so growth alone overshoots),
+  `PCAX_METAL_LANES` (queues in flight, default 8). `AGX_RELAX_CDM_CTXSTORE_TIMEOUT`
+  is set to 1 by pcax unless already set; on a display-attached M1 Max the
+  full tile does not survive without it at any lane count (the eviction is
+  display-driven and lands on whichever buffer is running), while with it
+  8 lanes are fastest.
+- `tests/test_metal_chunked.cpp` forces hundreds of chunks over one grid
+  and checks every element against a single-buffer run.
 
 ## Unified memory
 
@@ -167,7 +248,7 @@ anyway). The contract:
 | `filter.lof` | parity vs PDAL `filters.lof` (minpts=10), surviving `LocalOutlierFactor[1.5:]` | pcax **11,271** vs PDAL **11,272** (Δ 1 / 1.57 M, **99.99994%**) — kNN-of-kNN boundary near-tie (documented ≤4/2.6 M). **PASS** |
 | `filter.neighborclassifier` | parity vs PDAL `filters.neighborclassifier` (k=10), full Classification (the exact-mask filter — Classification is written to LAS, so compared point-for-point) | count **exact** (1,569,508); **15** per-point class flips (all 1↔2 ground/unclassified vote ties at kNN boundaries), **99.99904%** agreement; mean 1.173700 vs 1.173701. **PASS** (FP32 kNN tie-break vs PDAL nanoflann; sub-1-point-in-100K) |
 | `filter.fps` | smoke + count vs PDAL `filters.fps` (count=5000); fps drops points, so the count is compared directly | pcax-Metal runs cleanly (`kept 5000 of 1,569,508`) and outputs **exactly 5000** points — matches PDAL's structural output count (both keep exactly `count`; seed-0 greedy with lowest-index tie-break, identical to `Segmentation::farthestPointSampling`). **PASS**. Note: PDAL's CPU FPS is O(N·count) single-threaded (~20+ min on this tile); the pcax-Metal path does the same all-pairs argmax via per-iteration GPU dispatch + host argmax. |
-| `filter.reciprocity` | Metal watchdog fix | reciprocity is kNN-of-kNN: each thread runs 1+knn full kNN searches (~knn× the per-thread cost of the other neighborhood kernels), so a single command buffer over all 1.57 M points exceeded the macOS GPU watchdog (`kIOGPUCommandBufferCallbackErrorImpactingInteractivity`). Fixed by `dispatch1DChunked` (MetalContext) — the grid is split into 64 K-point chunks, each its own command buffer, with the kernel reading a `base` offset (`tid = base + thread_position_in_grid`). Math is identical to the single-dispatch path. The other four neighborhood kernels, `lof`, and `optimalneighborhood` stay single-dispatch (they complete well under the watchdog). |
+| `filter.reciprocity` | Metal watchdog fix | reciprocity is kNN-of-kNN: each thread runs 1+knn full kNN searches (~knn× the per-thread cost of the other neighborhood kernels), so a single command buffer over all 1.57 M points exceeded the macOS GPU watchdog (`kIOGPUCommandBufferCallbackErrorImpactingInteractivity`). First fixed with a hand-rolled 64 K-point chunked dispatch for this kernel only; the same failure then hit `filter.outlier` on a 23.4 M-point tile, and `dispatch1D` now chunks every kernel adaptively (see "GPU watchdog"). Math is identical to the single-dispatch path. |
 
 The SOR kNN kernel (~3 s) dominates and has headroom (the CUDA path does
 the same search in ~1.5 s); read/write are already 100×-class faster than
@@ -252,7 +333,8 @@ PDAL thanks to laz-perf parallel I/O. Even so the full pipeline clears the
       (≥99.99% point agreement; `nndistance` point-exact). One real bug was
       found and fixed in the process: `filter.reciprocity` (kNN-of-kNN, ~knn×
       the per-thread work) tripped the macOS GPU watchdog in a single command
-      buffer; fixed with chunked dispatch (`dispatch1DChunked`). The
+      buffer; fixed with chunked dispatch, since generalized to every
+      kernel by the adaptive `dispatch1D` (see "GPU watchdog"). The
       `approximatecoplanar`/`covariancefeatures`/`cluster`/`dbscan`/
       `lloydkmeans` Metal kernels were verified in earlier Phase-9 commits.**
 

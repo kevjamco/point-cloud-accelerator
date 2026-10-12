@@ -156,6 +156,8 @@ for the compression phase, plus ~3 MiB per compressor thread.
 
 ## Limits / notes
 
+- A cloud with no points is not an error: the writer logs a warning, writes
+  no file, and `pcax run` exits 3 (README, "exit codes").
 - Single hierarchy page; `pointCount` per node is int32 (COPC spec).
 - Geographic-CRS input (degrees × metres): the cube edge is the Z extent, so
   the tree is a narrow column that splits mostly in Z — same for PDAL.

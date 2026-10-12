@@ -11,7 +11,13 @@ conda-forge or PyPI. Their dependencies
 mamba install -c https://conda.adv-algos.net/pcax -c conda-forge pcax
 # or: conda install -c https://conda.adv-algos.net/pcax -c conda-forge pcax
 # or: pixi add pcax  (with both channels in your manifest)
+pcax activate you@example.com     # once per machine; see Licensing.md
 ```
+
+`pcax run` needs an activated evaluation (a verified email, network access
+to the license server on every run) or a commercial license token or lease.
+[Licensing.md](Licensing.md) has the flow, what is reported to the server
+and the environment variables for CI and air-gapped hosts.
 
 ## Platforms
 
@@ -50,8 +56,8 @@ before anything is published:
 A release is published only if both backends pass. Published packages are
 never overwritten, so a fix ships as a new version or build number.
 
-## Building from source
+## Source
 
-See the [README](../README.md#build) for the CMake build, its dependencies and
-the GPU backend options. Building pcax yourself needs no conda packaging: the
-channel above exists so that most users do not have to.
+pcax is distributed as a binary only. The public repository carries the
+documentation, the example pipelines and the PDAL comparator; the engine
+source is not published.

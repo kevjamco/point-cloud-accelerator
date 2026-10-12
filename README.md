@@ -51,14 +51,29 @@ the Advanced Algorithms conda channel; dependencies come from conda-forge:
 ```bash
 mamba install -c https://conda.adv-algos.net/pcax -c conda-forge pcax
 pcax --version
+pcax activate you@example.com     # evaluation: verify your email once per machine
 ```
 
 Needs an NVIDIA driver for CUDA 13 (R580+) on Linux, or macOS 14+ on Apple
 Silicon. See [docs/Install.md](docs/Install.md).
 
+### Activate
+
+`pcax run` checks with the Advanced Algorithms license server before it
+executes: an evaluation is activated with a verified email and needs network
+access on every run; commercial licenses get a token or an offline lease.
+Each run reports its pipeline's stage types, point counts and timing, never
+file names or data. [docs/Licensing.md](docs/Licensing.md) has the full
+disclosure, the environment variables for CI and air-gapped hosts, and exit
+code 4.
+
+pcax is distributed as a binary; this repository carries the documentation,
+the example pipelines and the PDAL comparator.
+
 ### GPU backend (CUDA vs Metal)
 
-pcax has two GPU backends, chosen by platform:
+pcax has two compile-time GPU backends, chosen automatically by platform
+(`-DPCA_GPU_BACKEND=CUDA|METAL` to override):
 
 | Backend | Platform | Notes |
 |---|---|---|
@@ -77,6 +92,32 @@ target (SOR 12.9×, normal ~15×, hag_nn ~12–20× faster than PDAL end-to-end 
 a 1.6 M-point tile). See [docs/MetalBackend.md](docs/MetalBackend.md) for the
 architecture, the per-filter CUDA/Metal porting pattern, measured results, and
 follow-ups.
+
+### LAZ Backend Selection
+
+pcax supports two compile-time backends for LAS/LAZ I/O:
+
+| Backend | License | Default | Parallel I/O | CMake Flag |
+|---|---|---|---|---|
+| **laz-perf** | Apache-2.0 | **Yes** | Chunk-level parallel | `-DPCA_LAZ_BACKEND=LAZPERF` |
+| **LASlib** + LASzip | LGPL-2.1 | No | Single-threaded | `-DPCA_LAZ_BACKEND=LASLIB` |
+
+Both backends register the same stage types (`read.las`, `write.las`) and produce identical point data. The choice is compile-time only — no runtime overhead or abstraction layer.
+
+**laz-perf** (default) — vendored in `extern/lazperf/` (Apache-2.0). Supports chunk-level parallel LAZ compress/decompress using a thread pool. Our writer owns the file structure (headers, VLRs, EVLRs) and delegates only point compression to laz-perf, preserving full VLR round-tripping.
+
+**LASlib** — opt-in, built from the LAStools submodule (`extern/LAStools/`, `git submodule update --init --recursive`) as a shared library. Single-threaded fallback. LASlib/LASzip are LGPL-2.1, so a `pcax` built this way is a combined work under the LGPL's terms for that portion: Advanced Algorithms LLC does not distribute such binaries, and anyone who does must satisfy LGPL-2.1 for the LASlib part (shipping the shared library alongside suffices). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+#### Performance comparison (87.3M points, LAS 1.4 format 7, 16 threads)
+
+| Stage | LASlib (1 thread) | laz-perf (1 thread) | laz-perf (16 threads) | Speedup |
+|---|---|---|---|---|
+| Read LAZ | 34.3s | 33.0s | **4.3s** | **7.7x** |
+| GPU SOR filter | 2.4s | 2.4s | 2.4s | — |
+| Write LAZ | 17.2s | 20.6s | **2.5s** | **8.2x** |
+| **Total** | **53.8s** | **56.0s** | **~9.1s** | **6.1x** |
+
+Parallel I/O exploits LAZ chunk independence — each 50K-point chunk has its own arithmetic coder state, so chunks decompress/compress with zero shared state. Scaling is near-linear up to physical core count.
 
 ### Run
 
@@ -100,6 +141,14 @@ pcax analyze pipeline.yaml --json                # machine-readable
 
 # Debug logging + profiler tree (timing, RAM, GPU memory)
 pcax run pipeline.yaml -d
+
+# Many files through one process: one job (a JSON object of variables) per line
+pcax run pipeline.yaml --batch jobs.jsonl --batch-out results.jsonl
+pcax analyze pipeline.yaml --batch jobs.jsonl    # peak job memory, workers that fit
+
+# The same profile as JSON, plus per-stage point counts (no debug logging needed)
+pcax run pipeline.yaml --profile-json profile.json
+# exit 0 = every output written, 3 = a writer had no points to write, 1 = error
 
 # Host a directory of write.copc output + the embedded 3D viewer
 pcax serve out/ --bind 0.0.0.0 --port 8080      # browse to http://host:8080/
@@ -147,6 +196,62 @@ Debug mode (`-d`) prints a profiler summary at the end of the pipeline:
 
 Memory values are snapshots at the end of each step (not peak tracking).
 
+`--profile-json FILE` writes the same profile for scripts, with the cloud
+size entering and leaving every stage:
+
+```json
+{
+  "exit_code": 0,
+  "outcome": "written",
+  "total_ms": 584.2,
+  "stages": [
+    {"name": "read", "type": "read.las", "ms": 136.3, "gpu": false,
+     "ram_bytes": 128974848, "gpu_bytes": 0,
+     "points_in": 0, "points_out": 1569508, "outcome": "ok", "steps": []},
+    {"name": "ground", "type": "filter.range", "ms": 48.5, "gpu": false,
+     "ram_bytes": 218103808, "gpu_bytes": 0,
+     "points_in": 1569508, "points_out": 297588, "outcome": "ok", "steps": []}
+  ]
+}
+```
+
+`steps` holds a GPU stage's sub-steps (`label`, `ms`, `gpu`, `ram_bytes`,
+`gpu_bytes`). `gpu_bytes` is the device's used memory, all processes
+included, and is 0 until the first GPU stage has run. The file is written
+whatever the result, and `pcax run` reports the result in its exit code:
+
+| Exit | `outcome` | Meaning |
+|---|---|---|
+| 0 | `written` | Every writer wrote its output. |
+| 3 | `empty` | The run succeeded, but at least one `writer.gdal_gpu` or `write.copc` stage received no points and skipped its file (stage `outcome: "empty"`). Outputs of the other writers are complete. |
+| 1 | `error` | The run failed; `error` holds the message and the failing stage has `outcome: "error"`. |
+
+### Batch runs
+
+`pcax run pipeline.yaml --batch jobs.jsonl` runs the pipeline once per line
+of `jobs.jsonl` in a single process, so the GPU context, kernel images, the
+PROJ database and the thread pool are set up once instead of once per file.
+Each line is a JSON object of pipeline variables (they override `-v`); the
+key `profile_json` names that job's profile file:
+
+```json
+{"input": "tiles/a.laz", "output": "out/a.tif", "profile_json": "out/a.json"}
+{"input": "tiles/b.laz", "output": "out/b.tif"}
+```
+
+Jobs run in order, one after another. A job that fails or has an empty
+output does not stop the batch. `--batch-out results.jsonl` gets one line
+per job (`job`, `exit_code`, `outcome`, `total_ms`, `error`), and the batch
+exits 1 if any job failed, else 3 if any had an empty output, else 0.
+Outputs are identical to separate runs. Combined with
+`writer.gdal_gpu merge: true`, the jobs of a batch can build one raster
+between them.
+
+`pcax analyze pipeline.yaml --batch jobs.jsonl` analyzes every job and
+reports the largest — a batch needs the memory of its biggest job — and how
+many such workers fit on the GPU and in host memory right now (`--json` for
+scripts; exit 2 when the peak job does not fit).
+
 ## Pipeline Format
 
 YAML with named stages and explicit data flow:
@@ -183,7 +288,8 @@ stages:
 
 | Type | Description | Device |
 |---|---|---|
-| [`read.las`](docs/Filters.md#readlas) | Read LAS/LAZ, parallel chunk decompress (laz-perf); extracts Intensity/returns/GpsTime/RGB/ScanAngle + Synthetic/KeyPoint/Withheld/Overlap flag dims | CPU |
+| [`read.copc`](docs/Filters.md#readcopc) | Read a COPC file through its octree: with `bounds`, only the intersecting nodes are decoded | CPU |
+| [`read.las`](docs/Filters.md#readlas) | Read LAS/LAZ (optional `bounds`, `layers`), parallel chunk decompress (laz-perf); extracts Intensity/returns/GpsTime/RGB/ScanAngle + Synthetic/KeyPoint/Withheld/Overlap flag dims | CPU |
 | [`filter.outlier`](docs/Filters.md#filteroutlier) | Statistical outlier removal (SOR) | GPU |
 | [`filter.reproject`](docs/Filters.md#filterreproject) | CRS reprojection (arbitrary CRS via PROJ planning, datum shifts, GTG geoid grids, fp64/fp32 toggle). See [docs/Reprojection.md](docs/Reprojection.md) | GPU |
 | [`filter.range`](docs/Filters.md#filterrange) | Cull by dimension ranges (PDAL `filters.range` grammar) | CPU |
@@ -262,7 +368,56 @@ LAS/LAZ → Reader → SoA PointCloud → GPU Upload → Filter/Writer → Downl
 
 The full reference — data structures, the executor, the spatial index, every
 CUDA kernel, the CUDA/Metal split and known limits — is
-[docs/Architecture.typ](docs/Architecture.typ).
+[docs/Architecture.typ](docs/Architecture.typ) (`make docs` builds the PDF).
+
+## Docker
+
+```bash
+docker build -f docker/Dockerfile -t pcax .
+docker run --gpus all -v $PWD/data:/data pcax run /data/pipeline.yaml -v input=/data/tile.laz
+```
+
+`filter.ml_noise` needs a user-supplied model: mount it and pass
+`-v model=/models/model.txt` ([docs/MlNoiseFilter.md](docs/MlNoiseFilter.md)).
+
+## Tests
+
+Three layers, selected by ctest label:
+
+```bash
+ctest --test-dir build -L unit              # C++ unit + GPU tests; nothing external
+ctest --test-dir build -L unit -LE gpu      # the same on a host without a GPU
+ctest --test-dir build -L serve             # pcax serve HTTP contract (curl)
+```
+
+### Integration suite
+
+Per-stage regression tests run the full Everglades DSM/DTM chain on a
+committed 1.57M-point fixture (`tests/data/`, see its README for
+provenance) in three variants (gpu-fp64, gpu-fp32, cpu-fp64), comparing
+every stage's fingerprint and the output rasters against committed
+baselines (`tests/integration/baselines/`). See
+`docs/IntegrationTesting.md` for the tier/tolerance design.
+
+```bash
+pip install -r requirements-dev.txt          # pytest, numpy, laspy (+ GDAL bindings for raster tests)
+cmake -B build                               # re-configure so ctest registers the Python tiers
+
+# Tier 1 — fast regression vs baselines (~5 s; pcax only)
+ctest --test-dir build -L integration
+
+# Tier 2 — per-stage PDAL parity on the same fixture (~30 s; needs the `pdal` CLI on PATH)
+ctest --test-dir build -L parity
+
+# Tier 3 — advisory per-stage timings vs a local (gitignored) baseline
+ctest --test-dir build -L perf
+
+# Regenerate baselines after an intentional behavior change
+python3 -m pytest tests/integration --update-baselines
+```
+
+Tests that need something you do not have (`pdal`, GDAL bindings, a GPU, an
+ml_noise model) skip with a message saying what to install.
 
 ## Working with PDAL
 
@@ -295,6 +450,41 @@ in [`compare/`](compare/README.md), which uses whatever `pdal` binary is on
 your PATH to measure parity and speed, and the opt-in `pdal.filter` adapter
 ([docs/PdalAdapter.md](docs/PdalAdapter.md)).
 
+## Project Structure
+
+```
+├── CMakeLists.txt
+├── include/pca/           # Public headers
+│   ├── Dimension.hpp      # DimId, DimType enums
+│   ├── DimArray.hpp       # Contiguous typed buffer
+│   ├── PointCloud.hpp     # SoA container + GPU memory
+│   ├── Stage.hpp          # Stage/Reader/Filter/Writer base classes
+│   ├── StageFactory.hpp   # Self-registering factory
+│   ├── StageOptions.hpp   # Key-value options from YAML
+│   ├── Pipeline.hpp       # YAML parser + execution engine
+│   ├── ThreadPool.hpp     # Minimal thread pool for parallel I/O
+│   └── Log.hpp            # Logging + profiler
+├── src/
+│   ├── core/              # Framework internals
+│   ├── readers/           # LAS/LAZ (laslib / lazperf), text, PLY
+│   ├── filters/           # one stage per file: host .cpp (+ .cu / .metal.cpp for GPU stages)
+│   ├── writers/           # LAS/LAZ, COPC (+ CopcOctree.cu), GeoTIFF (GdalGpuWriter), text, PLY
+│   ├── serve/             # `pcax serve`: HTTP server + COPC index (cpp-httplib)
+│   └── main.cpp           # CLI entry point
+├── viewer/                # Embedded 3D viewer: Potree 1.8.2 (trimmed) + pcax page
+├── cmake/EmbedAssets.cmake# .incbin embedding of viewer/ into the binary
+├── extern/
+│   ├── lazperf/           # Vendored laz-perf (Apache-2.0) — default LAZ backend
+│   ├── cpp-httplib/       # Vendored single-header HTTP server (MIT)
+│   ├── metal-cpp/         # Apple's Metal C++ headers (Apache-2.0), Metal backend only
+│   └── LAStools/          # Optional git submodule (LGPL-2.1), LASLIB backend only
+├── compare/               # pcax ↔ PDAL comparator (uses the system `pdal`; optional)
+├── tests/                 # Unit + GPU tests, tests/integration (pytest), tests/serve
+├── pipelines/             # Example YAML pipelines
+├── docs/                  # Architecture, per-filter semantics, parity, testing
+└── docker/                # Dockerfile
+```
+
 ## Roadmap
 
 Known gaps and planned work are in [ROADMAP.md](ROADMAP.md); the PDAL stages
@@ -312,9 +502,11 @@ Copyright © 2026 Advanced Algorithms LLC. Point Cloud Accelerator is
 - **Every other use needs a commercial license** — whatever your size, and
   whether or not you are a company. Email
   [kevin@adv-algos.com](mailto:kevin@adv-algos.com).
-- **No redistribution**: use, modify and deploy it inside your organization;
+- **No redistribution**: use and deploy it inside your organization;
   only Advanced Algorithms LLC distributes it. Forking here to contribute
-  back is fine.
+  docs or pipelines back is fine.
+- **Enforced by the binary**: every `pcax run` is granted by the license
+  server and logged; see [docs/Licensing.md](docs/Licensing.md).
 
 The full terms, including how eligibility is measured, are in
 [LICENSE](LICENSE). Vendored third-party components keep

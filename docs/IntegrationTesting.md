@@ -76,6 +76,9 @@ invariants (monotone counts, drop_origin neutrality, SOR
 relabels-not-drops) hold independent of baselines.
 `test_origin_drop.py` covers the drop-origin semantics on a synthetic
 las_synth file, since the fixture has no on-axis points.
+`test_run_outcomes.py` pins the `pcax run` contract scripts depend on:
+exit code 0 / 3 (a writer had no points) / 1, and the `--profile-json`
+schema with per-stage `points_in`/`points_out`.
 
 After an intentional behavior change, regenerate with
 `pytest tests/integration --update-baselines` and commit the diff —
@@ -157,6 +160,27 @@ rely on (index JSON, `HEAD`, single/suffix/multipart `Range` → 206 with the
 exact bytes, 416, CORS preflight, traversal and non-COPC names → 404, the
 embedded viewer assets + WASM MIME, concurrent range fetches). The shell twin
 `tests/serve/test_serve.sh` runs as the `test_serve_http` ctest.
+
+## License tier (label `license`, marker `license`)
+
+`pcax run` needs a license grant (docs/Licensing.md). Every other tier gets
+one without network access: dev and CI source builds compile in the *test*
+public key (`tests/license/test_pubkey.hex`), and the ctest/pytest harness
+sets `PCAX_LICENSE_LEASE` to the committed `tests/license/test_lease.json`,
+an `internal` lease signed with the matching test private key, plus
+`PCAX_LICENSE_DIR` to a scratch directory so no test can touch
+`~/.config/pcax`. A pre-set `PCAX_LICENSE_LEASE` in the environment wins
+(the package test runs the installed, production-keyed binary with a real
+internal lease).
+
+`test_license.py` exercises the online flows against the real license
+server, started locally in a dev mode (test signing key; the e-mail code is
+read from a dev-only endpoint instead of an inbox), and drives the binary
+through `pcax activate`, a granted and reported run, wrong code,
+revocation, server unreachable → exit 4, admin-issued commercial tokens,
+`pcax license lease` and an offline run with the lease, a tampered lease,
+and a token bound to another machine. Skips when the server's tooling is
+not installed on the host.
 
 ## Extending to a new stage
 

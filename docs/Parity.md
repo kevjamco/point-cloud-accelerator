@@ -37,6 +37,11 @@ within that quantum of the boundary:
   boundary within ~1e-5 m on a 200 m tile could flip a boundary point.
   On the fixtures, `readers.copc` returns identical point sets from the pcax
   and PDAL files.
+- **Bounds at read** (`read.las` / `read.copc` `bounds`): exact. The test
+  runs on absolute coordinates decoded from the int32 records, as
+  `filter.crop` does before any reprojection, so the result is the same
+  records in the same order as a full read plus `filter.crop`; PDAL's
+  `readers.copc` returns the identical point set for the same window.
 - **crop polygons with `a_srs`**: when PDAL reprojects the polygon, PROJ
   jitters vertices by ~1e-9 and exactly-on-edge points flip either way.
 
@@ -87,6 +92,15 @@ threshold can flip:
   (dz_knn16, dz_min/max32, below_frac32) differ on 0.01–1.5% of points —
   below the float16 resolution the model was trained at — and the decision
   mask was exact (0 / 2.6 M) with the reference model.
+- **LAZ files without a usable chunk table** (writer interrupted, file cut
+  short, corrupt table): PDAL (laz-perf) refuses them; `read.las` rebuilds
+  the chunk layout from the point data as LASzip does and reads every
+  complete chunk, logging the recovered count against the header's. On such
+  a file the point set is what LAStools reads, not what PDAL reads.
+- **GeoTIFF vertical datum codes** (`VerticalCSTypeGeoKey` 5101–5106) resolve
+  to the vertical CRS for the datum and unit key, as GDAL's GeoTIFF reader
+  and so PDAL resolve them (5103 + metre → EPSG:5703). Same CRS, no
+  tolerance.
 
 ## Measuring it yourself
 

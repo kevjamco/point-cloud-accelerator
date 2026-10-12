@@ -10,7 +10,7 @@ licenses are unaffected by ours.
 
 | Component | Version | License | Location |
 |---|---|---|---|
-| laz-perf | 3.2.0 | Apache-2.0 | `extern/lazperf/` (`LICENSE`, `UPSTREAM.md`) |
+| laz-perf | 3.2.0 | Apache-2.0 | `extern/lazperf/` (`LICENSE`, `UPSTREAM.md`); `src/readers/LazLayeredDecoder.cpp` adapts its `detail/field_point14.cpp` |
 | cpp-httplib | 0.53.1 | MIT | `extern/cpp-httplib/` (`LICENSE`, `UPSTREAM.md`) |
 | metal-cpp | Xcode 15 release | Apache-2.0 | `extern/metal-cpp/` (`LICENSE.txt`, `UPSTREAM.md`) |
 | Potree | 1.8.2 | BSD-2-Clause | `viewer/potree/` (`viewer/LICENSES/POTREE`, `viewer/UPSTREAM.md`) |

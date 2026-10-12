@@ -43,6 +43,68 @@ pcax run pipeline.yaml -v input=myfile.laz
 | `gdalopts` | *(none)* | GDAL creation options, comma-separated (e.g., `COMPRESS=DEFLATE,TILED=YES`) |
 | `data_type` | `float32` | Output data type: `float32`, `float64`, `int32`, `int16`, `uint8` |
 
+| `merge` | `false` | `true`: fold the result into the raster already at `filename` (same grid) instead of replacing it, each band by its own statistic. `first`: keep existing values, fill only cells without data. |
+| `grids` | *(none)* | A list of fixed grids, each `{origin_x, origin_y, width, height, filename}`; replaces `filename` and the single-grid options. |
+
+A cloud with no points is not an error: the writer logs a warning, writes
+no file, and `pcax run` exits 3 (README, "exit codes"). A file already at
+`filename` is left untouched.
+
+## Merging into an existing raster
+
+With `merge: true` the writer opens the raster at `filename`, if there is
+one, and combines it with the new result band by band: `min` by minimum,
+`max` by maximum, `count` by sum. Those statistics compose exactly — the
+merged raster of two disjoint sets of points equals the raster of their
+union, in bin mode and in radius mode — so a mosaic can be built by running
+one file after another into the same raster. `mean`, `stdev`, `idw` and
+percentiles do not compose and are refused with `merge: true`.
+`merge: first` works for any statistic: cells that already hold data keep
+it, the others take the new value.
+
+The target must be on exactly the same grid (size, geotransform, band
+count and band names), so merging needs a fixed grid (`origin_x`,
+`origin_y`, `width`, `height`, or `grids`). When no file exists yet it is
+created as usual. One writer at a time: two processes merging into the same
+file concurrently will lose updates — run them through one
+`pcax run --batch`, or serialise them.
+
+```yaml
+  dsm:
+    type: writer.gdal_gpu
+    input: clean
+    filename: "cell_dsm.tif"
+    resolution: 1.0
+    output_type: max
+    origin_x: 610000
+    origin_y: 3500000
+    width: 10000
+    height: 10000
+    merge: true
+```
+
+## Several grids from one cloud
+
+`grids` rasters the same cloud into several fixed windows in one stage —
+every cell a boundary tile touches, without reading or filtering the tile
+again. Each entry names its own file. A grid the cloud does not reach
+produces no file (and no merge); if none is reached the run exits 3.
+`merge` applies to each grid.
+
+```yaml
+  dsm:
+    type: writer.gdal_gpu
+    input: clean
+    resolution: 1.0
+    output_type: max
+    merge: true
+    grids:
+      - {origin_x: 600000, origin_y: 3500000, width: 10000, height: 10000, filename: "u14_e060_n350.tif"}
+      - {origin_x: 610000, origin_y: 3500000, width: 10000, height: 10000, filename: "u14_e061_n350.tif"}
+```
+
+A filename in `grids` cannot contain `,` or `;`.
+
 ## Output Bands
 
 Bands are written in this order (only those requested via `output_type`):

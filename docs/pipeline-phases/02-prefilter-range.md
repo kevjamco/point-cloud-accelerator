@@ -14,10 +14,15 @@ work:
 `filter.range` implements PDAL's `filters.range` grammar exactly: ranges on the
 **same** dimension are OR'd; ranges on **different** dimensions are AND'd.
 `[a:b]` is inclusive, `!` negates, and open/exclusive bounds are supported. It
-runs on CPU with `ThreadPool` chunking — a memory-bound single pass where GPU
-upload would not pay off. Dropped points are removed with
+runs on CPU, chunked over the shared thread pool — a memory-bound single pass
+where GPU upload would not pay off. Dropped points are removed with
 `PointCloud::compact(keepMask)`, which compacts both dims and raw records and
 updates `metadata.pointCount`.
+
+Consecutive `filter.range`, `filter.crop` and `filter.dem` stages are fused by
+the executor: each ANDs its test into one keep mask and the cloud is compacted
+once, after the last of them. The two range stages below therefore cost one
+compaction, and the result is identical to running them one by one.
 
 ## pcax
 

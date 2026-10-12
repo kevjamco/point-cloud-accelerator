@@ -29,17 +29,27 @@ Conventions used throughout:
   value may use `${var}` substitution.
 - **Parity** is the measured agreement with PDAL on real USGS lidar; the
   tolerance classes are explained in [Parity.md](Parity.md).
+- **Threads.** CPU stages share one pool sized to the CPUs the process may
+  use: the affinity mask capped by the cgroup CPU quota (the container
+  limit), or `PCAX_THREADS=N` when set. A stage's `threads` option
+  overrides it for that stage (`0` = the default above).
+- **Fused predicates.** Consecutive `filter.range`, `filter.crop` and
+  `filter.dem` stages are per-point keep tests; the executor evaluates
+  such a run against one mask and compacts the cloud once. The output is
+  identical to running them separately (`PCAX_FUSE_PREDICATES=0` disables
+  the fusion, for comparison).
 
 ## Summary
 
 | Stage | Device | Reads | Writes | Point count | PDAL equivalent | Options |
 |---|---|---|---|---|---|---|
-| [`read.las`](#readlas) | CPU (threaded) | LAS 1.2–1.4 / LAZ file | adds `X`, `Y`, `Z`, `Classification` · per `attr_dims`: `In… | set to N | `readers.las` | `filename`, `threads`, `attr_dims` |
+| [`read.copc`](#readcopc) | CPU (threaded) | COPC 1.0 file; only the octree nodes intersecting `bounds` | adds `X`, `Y`, `Z`, `Classification` · per `attr_dims`, as `read.las` | set to the points inside `bounds` | `readers.copc` | `filename`, `bounds`, `threads`, `attr_dims` |
+| [`read.las`](#readlas) | CPU (threaded) | LAS 1.2–1.4 / LAZ file | adds `X`, `Y`, `Z`, `Classification` · per `attr_dims`: `In… | set to N | `readers.las` | `filename`, `bounds`, `threads`, `attr_dims` |
 | [`read.text`](#readtext) | CPU | delimited text / CSV file: a header line of PDAL dimension… | adds `X`, `Y`, `Z` · every other recognised header column a… | set to N | `readers.text` | `filename`, `separator`, `header`, `skip` |
 | [`read.ply`](#readply) | CPU | PLY file, `ascii` or `binary_little_endian`; the `vertex` e… | adds `X`, `Y`, `Z` · every other recognised property as a F… | set to N | `readers.ply` | `filename` |
 | [`filter.range`](#filterrange) | CPU (threaded) | every dimension named in `limits` | `none` | reduced | `filters.range` | `limits` |
 | [`filter.crop`](#filtercrop) | CPU (threaded) | `X`, `Y`, `Z` | `none` | reduced | `filters.crop` | `bounds`, `polygon`, `outside` |
-| [`filter.dem`](#filterdem) | CPU (threaded) | `X`, `Y`, the dimension named in `limits` | `none` | reduced | `filters.dem` | `raster`, `limits`, `band` |
+| [`filter.dem`](#filterdem) | CPU (threaded) | `X`, `Y`, the dimension named in `limits` | `none` | reduced | `filters.dem` | `raster`, `limits`, `band`, `interpolation`, `reproject`, `raster_srs` |
 | [`filter.assign`](#filterassign) | CPU | the dimension of each assignment; the `condition` dimension | the dimension of each assignment | unchanged | `filters.assign` | `assignment`, `condition` |
 | [`filter.decimation`](#filterdecimation) | CPU | `none` | `none` | reduced | `filters.decimation` | `step`, `offset`, `limit` |
 | [`filter.head`](#filterhead) | CPU | `none` | `none` | reduced | `filters.head` | `count`, `invert` |
@@ -84,7 +94,7 @@ Conventions used throughout:
 | [`write.copc`](#writecopc) | GPU (CPU fallback) | `all` — raw records + `X`, `Y`, `Z`, `Classification`, `Ove… | `none` | unchanged | `writers.copc` | `filename`, `extra_dims`, `max_node_points`, `max_depth`, `grid_size`, `node_order`, `format`, `threads`, `a_srs`, `device` |
 | [`write.text`](#writetext) | CPU | `all` present dims through `DimAccessor` — `X`/`Y`/`Z` deco… | `none` | unchanged | `writers.text` | `filename`, `format`, `delimiter`, `precision`, `write_header`, `quote_header`, `newline`, `order`, `keep_unspecified` |
 | [`write.ply`](#writeply) | CPU | `all` present dims through `DimAccessor` | `none` | unchanged | `writers.ply` | `filename`, `storage_mode`, `dims`, `precision` |
-| [`writer.gdal_gpu`](#writergdal_gpu) | GPU | `X`, `Y`, and the `dimension` dim | `none` | unchanged | `writers.gdal` | `filename`, `resolution`, `dimension`, `output_type`, `binmode`, `radius`, `power`, `window_size`, `nodata`, `data_type`, `gdaldriver`, `gdalopts`, `override_srs`, `default_srs`, `origin_x`, `origin_y`, `width`, `height`, `snap` |
+| [`writer.gdal_gpu`](#writergdal_gpu) | GPU | `X`, `Y`, and the `dimension` dim | `none` | unchanged | `writers.gdal` | `filename`, `resolution`, `dimension`, `output_type`, `binmode`, `radius`, `power`, `window_size`, `nodata`, `data_type`, `gdaldriver`, `gdalopts`, `override_srs`, `default_srs`, `origin_x`, `origin_y`, `width`, `height`, `snap`, `merge`, `grids` |
 | [`pdal.filter`](#pdalfilter) | CPU | the mapped dims: `X`, `Y`, `Z`, `Classification`, `Intensit… | the same mapped dims, as the PDAL filter left them · adds `… | set to N | any `filters.*` | `pdal_type` |
 
 ## Readers
@@ -94,10 +104,10 @@ Conventions used throughout:
 |---|---|
 | **Kind** | reader · **CPU** (threaded LAZ chunk decompression) |
 | **Source** | `src/readers/LasReader_lazperf.cpp` (LASLIB build: `src/readers/LasReader_laslib.cpp`) |
-| **PDAL equivalent** | `readers.las` (also `readers.copc` — a COPC file is read as plain LAZ; the hierarchy and `bounds`/`resolution` queries are ignored) |
+| **PDAL equivalent** | `readers.las` (a COPC file is read as plain LAZ here; [`read.copc`](#readcopc) uses its octree) |
 | **Reads** | LAS 1.2–1.4 / LAZ file (point formats 0–10; LAZ compressor 1 sequential, 2/3 parallel per chunk, fixed or variable chunks) |
 | **Writes** | adds `X`, `Y`, `Z` (float32, relative), `Classification` (uint8) · per `attr_dims`: `Intensity` (uint16), `ReturnNumber`, `NumberOfReturns` (uint8), `GpsTime` (double; formats with GPS), `ScanAngle` (float32), `Synthetic`, `KeyPoint`, `Withheld`, `Overlap` (uint8), `Red`, `Green`, `Blue` (uint16; formats with RGB) · keeps the raw point records |
-| **Point count** | set to N (header count; shrunk with a warning if fewer points decode) |
+| **Point count** | set to N (header count; shrunk with a warning if fewer points decode), or to the points inside `bounds` |
 | **Parity** | byte-exact records (`docs/PdalFeatureMatrix.md`) |
 
 Coordinates are stored relative to the data-derived int32 minimum
@@ -108,20 +118,105 @@ bits and a raw class of 12 becomes class 0 with `Overlap = 1`; formats ≥6
 read the four flag bits from the flag byte (`src/core/LasAttrs.cpp`).
 `ScanAngle` is stored in the LAS 1.4 extended units (0.006°) for every
 format (legacy int8 degrees are divided by 0.006). The LASLIB variant reads
-sequentially with LASlib and does not read `threads`.
+sequentially with LASlib and does not read `threads`, `bounds` or `layers`.
+
+With `bounds`, points are tested as each chunk is decoded and only the
+survivors are kept, so the whole file is never resident and nothing
+downstream touches the dropped points. The test is the one `filter.crop`
+applies (absolute coordinates decoded from the int32 record,
+boundary-inclusive), so `read.las` with `bounds` gives exactly the records,
+order and dims of a full read followed by `filter.crop` with the same
+bounds. A plain LAZ file has no spatial index, so every chunk has to be
+looked at. For point formats 6–8, where LAZ stores each field as its own
+layer, only the X/Y layer of a chunk is decoded first, and a chunk with no
+point inside the X/Y box is dropped there (about 40–45 % of its decode
+cost); formats 0–5 are not layered and are decoded in full. For a file with
+an octree use [`read.copc`](#readcopc), which skips the chunks outside the
+query without decoding anything.
+
+`layers` (LAZ point formats 6–8) leaves out record fields the pipeline does
+not need. X, Y, Z, the return numbers, the scanner channel and the
+classification are always decoded; `layers` lists which of the others to
+decode as well. A field that is left out is zero in the raw records, its
+attribute dims are not created (naming one in `attr_dims` is an error), and
+`write.las` / `write.copc` refuse the cloud, because they would write the
+zeros. Those three rules apply to every input, so a pipeline behaves the
+same on any file; the decode time is saved only where the format has
+layers. A DSM/DTM pipeline that filters on classification and the Withheld
+flag needs `layers: flags`, which is about 40 % less decode time than `all`.
+
+A LAZ file whose chunk table is unusable is still read, the way LASzip
+reads it: when the compressor was interrupted before writing the table
+(the pointer at the start of the point data still holds its own position
+and the file ends wherever the writer stopped), when the pointer leads
+past the end of the file, or when the table is corrupt, the chunk layout is
+rebuilt from the point data and every chunk that is complete in the file is
+decoded. Point formats 6–8 store each chunk's size in the chunk, so the
+rebuild costs nothing; formats 0–5 are decoded sequentially once to find
+the chunk boundaries. The stage logs a `WARN` with the number of points
+present against the header's count — a truncated file yields the prefix
+that is there, which is one part of the tile's area — and the cloud's point
+count is the recovered count. A file with adaptive (variable-size) chunking
+cannot be rebuilt and is refused. PDAL refuses all of these files.
 
 **Options**
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `filename` | string | *required* | Input LAS/LAZ path. One file; globs are not expanded. |
-| `threads` | int | `0` | Worker threads for chunked LAZ decompression; `0` = hardware concurrency. Ignored for uncompressed LAS and compressor-1 LAZ. |
-| `attr_dims` | list | `all` | Attribute dims to extract from the raw records: `all`, `none`, or a comma list of `intensity`, `returnnumber`, `numberofreturns`, `gpstime`, `scanangle`, `synthetic`, `keypoint`, `withheld`, `overlap`, `rgb`. |
+| `bounds` | string | — | Keep only points inside `([xmin,xmax],[ymin,ymax])` or `([xmin,xmax],[ymin,ymax],[zmin,zmax])`, in the file's CRS, boundary-inclusive (the `filter.crop` syntax). |
+| `threads` | int | `0` | Worker threads for the chunked read; `0` = the default pool size. Ignored for compressor-1 LAZ. |
+| `attr_dims` | list | `all` | Attribute dims to extract from the raw records: `all`, `none`, or a comma list of `intensity`, `returnnumber`, `numberofreturns`, `gpstime`, `scanangle`, `synthetic`, `keypoint`, `withheld`, `overlap`, `rgb`. With `layers`, `all` means the dims whose fields are decoded. |
+| `layers` | list | `all` | Optional record fields to decode: `all`, `none`, or a comma list of `flags` (Synthetic/KeyPoint/Withheld/Overlap, scan direction, edge of flight line), `intensity`, `scanangle`, `userdata`, `pointsource`, `gpstime`, `rgb`, `nir`, `extrabytes`. Anything but `all` makes the cloud unwritable as LAS/COPC. |
 
 ```yaml
   read:
     type: read.las
     filename: "${input}"
+```
+
+---
+
+### read.copc
+
+| | |
+|---|---|
+| **Kind** | reader · **CPU** (threaded LAZ chunk decompression) |
+| **Source** | `src/readers/LasReader_lazperf.cpp` (LAZPERF backend; a LASLIB build registers the stage but errors at execute) |
+| **PDAL equivalent** | `readers.copc` (`bounds`; `polygon`, `resolution`, `requests`, `ogr` are not supported) |
+| **Reads** | COPC 1.0 (LAS 1.4, point formats 6–8): the info VLR and the hierarchy pages, then only the octree nodes whose cube intersects `bounds` |
+| **Writes** | as [`read.las`](#readlas) |
+| **Point count** | set to the points inside `bounds` (all points without it) |
+| **Parity** | identical point set to PDAL `readers.copc` for the same `bounds` ([Parity.md](Parity.md)) |
+
+A COPC file is a LAZ file whose chunks are octree nodes. `read.copc` walks
+the hierarchy (following child pages), selects the nodes
+whose cube intersects `bounds`, decodes only those chunks and then applies
+the same per-point test as `read.las` `bounds` / `filter.crop`. Nodes are
+decoded in file order, so the result is exactly a full `read.las` of the
+file followed by `filter.crop` — same records, same order — at a cost
+proportional to the nodes touched rather than to the file. Without `bounds`
+every node is read and the stage behaves like `read.las`.
+
+`bounds` is in the file's own CRS; PDAL's `/ EPSG:…` suffix is not
+supported. All levels of the octree are read (no `resolution` limit), so
+the full-density points inside the window are returned.
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `filename` | string | *required* | Input `.copc.laz` path. A file without a COPC info VLR is rejected (use `read.las`). |
+| `bounds` | string | — | Query box `([xmin,xmax],[ymin,ymax])` or with `,[zmin,zmax]`, boundary-inclusive, in the file's CRS. |
+| `threads` | int | `0` | Worker threads for node decompression; `0` = the default pool size. |
+| `attr_dims` | list | `all` | As `read.las`. |
+| `layers` | list | `all` | As `read.las`. |
+
+```yaml
+  read:
+    type: read.copc
+    filename: "${input}"
+    bounds: "([552000,553000],[2795000,2796000])"
 ```
 
 ---
@@ -264,7 +359,11 @@ Keeps points inside (or, with `outside: true`, outside) either an axis-aligned b
 | **Point count** | reduced (drops points; `compact`) |
 | **Parity** | exact |
 
-Keeps a point when its value lies in the band `raster − lower ≤ value ≤ raster + upper`, where `lower`/`upper` are the two numbers of the single `limits` range — the **lower limit is subtracted, the upper added** (PDAL's asymmetry: `Z[2:5]` keeps points from 2 below to 5 above the surface). The raster is sampled at the containing pixel (no interpolation); points falling outside the raster extent are dropped. Both band edges are inclusive regardless of bracket style, and a `!` prefix has no effect.
+Keeps a point when its value lies in the band `raster − lower ≤ value ≤ raster + upper`, where `lower`/`upper` are the two numbers of the single `limits` range — the **lower limit is subtracted, the upper added** (PDAL's asymmetry: `Z[2:5]` keeps points from 2 below to 5 above the surface). The raster is sampled at the containing pixel (no interpolation); points falling outside the raster extent are dropped. Both band edges are inclusive regardless of bracket style, and a `!` prefix has no effect. A nodata pixel is compared like any other value, as PDAL does — with the usual large negative nodata the points over it are dropped.
+
+Only the part of the raster under the cloud is read, so a large DEM costs what the tile's footprint costs.
+
+Two options go beyond PDAL, both off by default. `interpolation: bilinear` samples between pixel centres instead of taking the containing pixel, which removes the step in the Z band at pixel edges of a coarse DEM; where one of the four surrounding pixels is nodata the containing pixel is used. `reproject: true` warps the raster to the cloud's CRS when they differ (bilinear, horizontal CRS only — the values stay heights in the raster's vertical datum); without it the raster must already be in the point CRS.
 
 **Options**
 
@@ -273,6 +372,9 @@ Keeps a point when its value lies in the band `raster − lower ≤ value ≤ ra
 | `raster` | string | *required* | GDAL-readable elevation raster with a geotransform. |
 | `limits` | string | *required* | Exactly one range, e.g. `"Z[2:5]"`: `lower:upper` offsets from the raster surface. |
 | `band` | int | `1` | Raster band to sample (≥ 1). |
+| `interpolation` | string | `nearest` | `nearest` (containing pixel, PDAL) or `bilinear` (between pixel centres). |
+| `reproject` | bool | `false` | Warp the raster to the cloud's CRS when they differ. Needs a CRS on both; errors otherwise. |
+| `raster_srs` | string | — | CRS of the raster for `reproject`, when the file carries none. |
 
 ```yaml
   near_ground:
@@ -980,7 +1082,10 @@ compiled op chain executes in one fused GPU kernel when every step is
 supported, otherwise on multithreaded host PROJ (FP64, always correct). A CPU
 fallback is never silent: the stage logs a `WARN … NOT using the GPU op-chain`
 line with the reason. If source and target CRS are equivalent the stage is a
-no-op. Output coordinates are renormalized (`offset == dataMin`, `minRaw == 0`)
+no-op and the file's CRS records are kept. A `pipeline` of `+proj=noop` with
+`out_srs` is a relabel: the coordinates stay and the output carries `out_srs`
+(for a file whose header CRS is wrong or unparseable, e.g. legacy GeoTIFF
+keys). Output coordinates are renormalized (`offset == dataMin`, `minRaw == 0`)
 with an `auto` scale = next power of ten above `span / 2^23` (exact int32
 round-trip through the writer). With `on_error: keep`, failed points stay with
 coordinates at the new origin. Metal: the GPU op-chain is CUDA-only, so
@@ -990,8 +1095,8 @@ reprojection always runs on host PROJ (FP64) there.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `out_srs` | string | *required* unless `pipeline` is given | Target CRS — anything PROJ accepts (`EPSG:32756`, WKT, compound `EPSG:6344+5703`). With `pipeline`, used only for the output CRS VLR. |
-| `in_srs` | string | *(from file)* | Source CRS override; default is parsed from the file's WKT VLR / GeoTIFF keys (error if none). |
+| `out_srs` | string | *required* unless `pipeline` is given | Target CRS — anything PROJ accepts (`EPSG:32756`, WKT, compound `EPSG:6344+5703`). With `pipeline`, only labels the output CRS (also for `+proj=noop`); one PROJ cannot read is an error. |
+| `in_srs` | string | *(from file)* | Source CRS override; default is parsed from the file's WKT VLR / GeoTIFF keys (error if none). A GeoTIFF `VerticalCSTypeGeoKey` holding a vertical *datum* code (5101–5106, as GeoTIFF 1.0 listed them; 2006-era files) resolves to the vertical CRS for the datum and `VerticalUnitsGeoKey`, as GDAL and PDAL resolve it (5103 + metre → `EPSG:5703`). |
 | `pipeline` | string | — | Raw PROJ pipeline string; bypasses CRS planning. |
 | `precision` | enum(fp64\|fp32) | `fp64` | `fp32` is a reduced-accuracy dev mode (~metre-level horizontal error, loud warning). |
 | `device` | enum(gpu\|cpu) | `gpu` | `cpu` forces the host PROJ path (FP64). Also the executor residency hint. |
@@ -1000,7 +1105,7 @@ reprojection always runs on host PROJ (FP64) there.
 | `out_scale_z` | string | `out_scale` | Output Z quantization scale: `auto` or a positive number. |
 | `grids_path` | string | — | Directory of GTG grids, prepended to PROJ's search paths. |
 | `write_crs` | bool | `true` | Rewrite the output CRS VLRs (WKT + EPSG GeoTIFF key directory). |
-| `threads` | int | `0` | Thread count for the host PROJ fallback (`0` = hardware concurrency). Not documented in Reprojection.md. |
+| `threads` | int | `0` | Thread count for the host PROJ fallback (`0` = the default pool size). Not documented in Reprojection.md. |
 
 ```yaml
   reproject:
@@ -1662,7 +1767,7 @@ VLR is dropped (the `copc` VLR is kept).
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `filename` | string | *required* | Output path; `.laz` selects LAZ compression. |
-| `threads` | int | `0` | Threads for parallel LAZ chunk compression; `0` = hardware concurrency. LAZ output only. |
+| `threads` | int | `0` | Threads for parallel LAZ chunk compression; `0` = the default pool size. LAZ output only. |
 
 ```yaml
   write:
@@ -1705,7 +1810,7 @@ stage registers but throws at execute (laz-perf required).
 | `grid_size` | int | `128` | Per-node subsample grid per axis (power of two); COPC `spacing` = 2·halfsize / grid_size. |
 | `node_order` | enum(gpstime\|input) | `gpstime` | Point order inside a node; `gpstime` falls back to input order when the cloud has no `GpsTime` dim. |
 | `format` | int | auto | Output point format 6, 7 or 8 (auto: 6, or 7 when the source has RGB; a lower value warns that RGB/NIR is dropped). |
-| `threads` | int | `0` | Host threads for per-node LAZ compression; `0` = hardware concurrency. |
+| `threads` | int | `0` | Host threads for per-node LAZ compression; `0` = the default pool size. |
 | `a_srs` | string | *(none)* | CRS (WKT / `EPSG:n` / `EPSG:h+v`) used only when the source carries no CRS. |
 | `device` | enum(gpu\|cpu) | `gpu` | `cpu` runs the host octree + record assembly (identical output). Also the executor residency hint. |
 
@@ -1824,7 +1929,10 @@ is the population value. Empty cells are `nodata`; `window_size > 0` fills
 them on the CPU by inverse Chebyshev-distance weighting of populated cells
 within that pixel window. SRS priority: `override_srs`, the cloud's CRS
 (reprojected WKT, else source VLR WKT / GeoTIFF keys), `default_srs`; parsed
-by `OSRSetFromUserInput` (WKT, `EPSG:n`, `EPSG:h+v`).
+by `OSRSetFromUserInput` (WKT, `EPSG:n`, `EPSG:h+v`), before any gridding.
+`override_srs` and `default_srs` must parse; a cloud CRS that GDAL cannot
+parse is dropped with a `WARN` (the raster gets `default_srs`, else no CRS),
+as PDAL's `writers.gdal` behaves with an unreadable file SRS.
 TODO(verify): `dimension: Intensity|Classification` are accepted, but the
 kernels read the device buffer as float32 while those dims are uint16/uint8
 — no conversion was found in the CUDA or Metal paths.

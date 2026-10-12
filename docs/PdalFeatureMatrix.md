@@ -87,6 +87,7 @@ row here and a table entry there in the same change.
 | pcax stage | PDAL equivalent | Device | Parity vs PDAL |
 |---|---|---|---|
 | `read.las` | `readers.las` | CPU (parallel chunk decompress) | byte-exact records |
+| `read.copc` | `readers.copc` | CPU (hierarchy query, parallel node decompress) | identical point set for the same `bounds` window |
 | `write.las` | `writers.las` | CPU (parallel chunk compress) | byte-exact records |
 | `write.copc` | `writers.copc` | **GPU** (octree + record assembly; host LAZ coder) | byte-exact records (order + tree layout differ by design); readers.copc window queries identical |
 | `writer.gdal_gpu` | `writers.gdal` | **GPU** | ~2–20 cells/M differ (FP32 quantization, documented) |
@@ -233,7 +234,7 @@ algebra heavy — a candidate for a native GPU port that would beat PDAL.
 |---|---|---|---|---|
 | LAS / LAZ | ✅ | ✅ | **native (parallel laz-perf)** | ✅ |
 | GDAL raster (DSM/DTM) | — | ✅ | **native GPU (`writer.gdal_gpu`)** | ✅ (`writers.gdal`, CPU) |
-| COPC | ✅ (as LAZ; hierarchy ignored) | ✅ | **native GPU write (`write.copc`) + viewer host (`pcax serve`)** | ✅ (`writers.copc`, CPU; no viewer) |
+| COPC | ✅ (`read.copc`: octree `bounds` query; `read.las` reads it as plain LAZ) | ✅ | **native GPU write (`write.copc`) + viewer host (`pcax serve`)** | ✅ (`writers.copc`, CPU; no viewer) |
 | EPT | adapter only | — | ❌ | ✅ |
 | Text / CSV | **native (`read.text`)** | ✅ | **native (`read.text` / `write.text`)** | ✅ |
 | PLY | **native (`read.ply`)** | ✅ | **native (`read.ply` / `write.ply`, ascii+binary_le)** | ✅ |

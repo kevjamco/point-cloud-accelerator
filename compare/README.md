@@ -13,6 +13,7 @@ run pcax; the `parity` test tier and these tools skip when `pdal` is absent.
 | `filter_parity.py` | Does pcax stage X produce the same point set and dimension statistics as PDAL stage Y? The harness used when porting a stage. | `pdal` |
 | `copc_parity.py` | Are `write.copc` records byte-exact vs `writers.copc`, and do `readers.copc` window queries agree? | `pdal` |
 | `reproject_bench.py` | Reprojection micro-benchmark on synthetic tiles: PDAL `filters.reprojection` vs pcax `filter.reproject` (fp64/fp32), per-point drift. | `pdal`, `build/las_synth`, `build/las_compare` |
+| `decode_bench.py` | LAZ decode cost: `read.las`/`read.copc` per file, thread count and `bounds` window, and the read share when several pcax processes share a node. pcax only. | `build/pcax` |
 | `point_delta.py` | Streaming point-by-point delta of two LAS/LAZ files (membership, geometry, attributes). Tool-agnostic. | `laspy`, `numpy` |
 | `compare_geotiffs.py` | Raster equivalence: CRS/geotransform/nodata, IoU, bias/RMSE, worst cells. Tool-agnostic; also used by the integration tests. | GDAL Python bindings |
 | `fetch_grids.sh` | PROJ geoid/datum grids for the reprojection tests into `grids/`. | `curl` |

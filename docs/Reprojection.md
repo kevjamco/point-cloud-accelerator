@@ -53,7 +53,22 @@ masked.
 (3/7/14-parameter, position-vector and coordinate-frame conventions),
 `tmerc`/`utm`/`etmerc` (exact Poder/Engsager, identical to PROJ's default),
 `merc`, `webmerc`, `lcc` (1sp/2sp), `aea`, `hgridshift`, `vgridshift`,
-`push`/`pop`.
+`gridshift`, `push`/`pop`.
+
+`gridshift` is PROJ's generic grid operation, the one it selects for NAD83
+realization changes through NADCON5 — NAD83(2011) → NAD83 is four chained
+`+inv +proj=gridshift` steps. The op follows PROJ's implementation
+(`src/transformations/gridshift.cpp`): the grid's own `interpolation_method`
+(NADCON5 declares `biquadratic`: NOAA's 3×3 scheme whose window moves by one
+node at each half cell; otherwise bilinear), `+interpolation` and
+`+no_z_transform`, the height band of `GEOGRAPHIC_3D_OFFSET` grids, and
+PROJ's inverse — one non-iterated step for biquadratic grids, an iteration
+for bilinear ones. Against host PROJ on 20 000 points across CONUS the fp64
+chain agrees to 8·10⁻⁸ m in both directions. The supported subset is one
+geographic grid per step, of type `GEOGRAPHIC_3D_OFFSET` or
+`HORIZONTAL_OFFSET`, with arc-second/metre bands and no nodata; anything
+else (grid lists, projected grids, vertical-only grids) runs on host PROJ
+with the reason logged.
 
 ## Geodetic TIFF Grids
 
@@ -65,6 +80,13 @@ with software bilinear interpolation in the compute precision — matching
 CPU PROJ, which also interpolates fp32 grid nodes in fp64. Hardware texture
 filtering is deliberately not used (9-bit fixed-point interpolation
 weights).
+
+`gridshift` grids are continental (a NADCON5 CONUS file is 3541 × 1561
+nodes × 3 bands), so they are read only over the data's extent: the source
+bounding box is run through the steps ahead of the grid step, widened by
+0.05° and a four-node guard band, and that window alone is read and
+uploaded (tens of nodes a side for a lidar tile, a few ms). Results are
+identical to loading the whole grid.
 
 ### Managing grids (add / remove / change)
 
@@ -96,7 +118,8 @@ locations. For cloud deployments, bake the needed grids into the Docker
 image (offline-first; PROJ's CDN networking is not used by the GPU path).
 Verified against real grids in `tests/test_reproj_grids_real.cpp` (EGM96,
 AUSGeoid2020, BETA2007, NTv2 — all ≤ 1e-13 m vs PROJ on the host chain,
-storage-quantization-level end-to-end; skips when `grids/` is absent).
+storage-quantization-level end-to-end; NADCON5 `gridshift` ≤ 1e-7 m; skips
+when `grids/` is absent).
 
 ## Precision: fp64 vs fp32
 
